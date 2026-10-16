@@ -1,0 +1,7 @@
+# Android build output and signing key (never commit a signing key)
+android/build/
+android/*.apk
+android/release.keystore
+
+# Desktop build scratch, if rebuilt locally
+desktop/classes/
