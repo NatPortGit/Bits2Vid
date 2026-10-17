@@ -145,13 +145,13 @@ public final class App {
     static void usage() {
         System.out.println(
                 "bits2video - encode any file into a lossless video, and decode it back.\n\n" +
-                "  java -jar bits2video.jar encode <input-file> <output.mkv> [--password PW] [--keyfile FILE] [--password-prompt]\n" +
-                "  java -jar bits2video.jar decode <input.mkv> <output-folder> [--password PW] [--keyfile FILE] [--password-prompt]\n\n" +
+                "  java -jar bits2video.jar encode <input-file> <output.avi> [--password PW] [--keyfile FILE] [--password-prompt]\n" +
+                "  java -jar bits2video.jar decode <input.avi> <output-folder> [--password PW] [--keyfile FILE] [--password-prompt]\n\n" +
                 "Examples:\n" +
-                "  java -jar bits2video.jar encode photo.jpg photo.b2v.mkv\n" +
-                "  java -jar bits2video.jar decode photo.b2v.mkv .\n" +
-                "  java -jar bits2video.jar encode secrets.zip secrets.b2v3.mkv --password-prompt\n" +
-                "  java -jar bits2video.jar decode secrets.b2v3.mkv . --password-prompt --keyfile mykey.bin\n\n" +
+                "  java -jar bits2video.jar encode photo.jpg photo.b2v.avi\n" +
+                "  java -jar bits2video.jar decode photo.b2v.avi .\n" +
+                "  java -jar bits2video.jar encode secrets.zip secrets.b2v3.avi --password-prompt\n" +
+                "  java -jar bits2video.jar decode secrets.b2v3.avi . --password-prompt --keyfile mykey.bin\n\n" +
                 "Leave --password and --keyfile out to make a plain, unprotected video. Set either or both\n" +
                 "to encrypt with AES-256-GCM; decoding then requires the same password and/or key file.\n" +
                 "--password-prompt reads the password from the terminal instead of the command line, so it\n" +

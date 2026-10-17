@@ -19,7 +19,7 @@ import javax.crypto.spec.SecretKeySpec;
 /**
  * bits2video format B2V3: password/key-file encrypted variant of B2V2.
  *
- * Same 1920x1080 pixel grid and Matroska container as B2V2 (see B2V.java), but:
+ * Same 1920x1080 pixel grid and AVI container as B2V2 (see B2V.java), but:
  *
  *  - Cluster 0 is a plaintext "envelope" frame, not data: 'B2V3' | salt[16] |
  *    nonceBase[8] | pbkdf2Iterations u32 | dataFrames u32, zero padded to CAP.
@@ -81,7 +81,7 @@ public final class B2VSecure {
         byte[] nonceBase = new byte[NONCE_BASE_LEN]; rng.nextBytes(nonceBase);
         SecretKeySpec aesKey = deriveKey(secretMaterial(key), salt, ITERATIONS);
 
-        B2V.writeMkvHeader(out, n + 1);
+        B2V.writeAviHeader(out, n + 1);
         byte[] calib = B2V.calibrationRow();
         byte[] frame = new byte[B2V.FRAME_BYTES];
 
@@ -89,7 +89,7 @@ public final class B2VSecure {
         ByteBuffer e = ByteBuffer.wrap(envelope);
         e.put(MAGIC).put(salt).put(nonceBase).putInt(ITERATIONS).putInt((int) n);
         B2V.toFrame(envelope, calib, frame);
-        B2V.writeCluster(out, 0, frame);
+        B2V.writeAviFrame(out, frame);
 
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         byte[] plain = new byte[CIPHER_LEN];
@@ -122,9 +122,10 @@ public final class B2VSecure {
             ByteBuffer d = ByteBuffer.wrap(dataBuf);
             d.putInt((int) i).putInt((int) n).put(cipherText);
             B2V.toFrame(dataBuf, calib, frame);
-            B2V.writeCluster(out, i + 1, frame);
+            B2V.writeAviFrame(out, frame);
             if (p != null) p.update(done, size);
         }
+        B2V.writeAviIndex(out, n + 1);
         if (in.read() != -1) throw new IOException("input is longer than its reported size");
         out.flush();
     }

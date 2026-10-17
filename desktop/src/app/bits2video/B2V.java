@@ -1,31 +1,37 @@
 package app.bits2video;
 
-import java.io.ByteArrayOutputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.zip.CRC32;
 
 /**
- * bits2video format B2V2: 1 px cells, 8 bits per channel, lossless.
+ * bits2video format B2V2, AVI container (instead of the original app's Matroska
+ * container): same 1 px cells, 8 bits per channel, lossless pixel data -- same size,
+ * same density -- just packaged so ordinary players (VLC included) recognise it.
  *
- * Video:  1920x1080, uncompressed 24-bit RGB in Matroska (V_MS/VFW/FOURCC, BI_RGB,
- *         BGR byte order, rows stored top-down: biHeight = -1080), 1 frame per second.
- * Grid:   row 0 = calibration (cols 0-255 gray 0..255, 256-511 red, 512-767 green,
- *         768-1023 blue, rest black). Rows 1..1079 = data: each pixel's R,G,B values
- *         are 3 consecutive data bytes, left to right, top to bottom.
- * Data:   per frame, a header then payload, zero padded to CAP bytes. Big endian:
- *         'B2V2' | idx u32 | total u32 | payload_len u32 | total_bytes u64 |
- *         payload_crc32 u32 | name_len u16 | name (UTF-8) | header_crc32 u32
+ * AVI was chosen, rather than guessed at from memory, by generating a real raw-video
+ * AVI with actual ffmpeg in the build environment and reading its exact byte layout;
+ * this format matches that layout field for field (same BGR byte order and top-down
+ * -biHeight convention the original Matroska writer already used, so toFrame/fromFrame
+ * are unchanged from the original app -- only the container framing differs).
+ *
+ * Video:  1920x1080, uncompressed 24-bit BGR (BITMAPINFOHEADER, biCompression=BI_RGB,
+ *         biHeight=-1080 i.e. top-down) in an AVI 1.0 container, 1 frame/second, with
+ *         an idx1 index for seeking.
+ * Grid/Data: identical to the original app's B2V2 -- see calibrationRow/toFrame/
+ *         parseHeader below; this file only replaces the container (writeMkvHeader/
+ *         writeCluster/FrameReader) with AVI equivalents.
  */
 public final class B2V {
     public static final int W = 1920, H = 1080;
     public static final int FRAME_BYTES = W * H * 3;
     public static final int ROW_BYTES = W * 3;
-    public static final int CAP = W * (H - 1) * 3;           // data bytes per frame
+    public static final int CAP = W * (H - 1) * 3;
     static final int FIXED_HDR = 30;
     static final byte[] MAGIC = {'B', '2', 'V', '2'};
 
@@ -47,8 +53,10 @@ public final class B2V {
         int pay = CAP - hdrSize;
         long n = size == 0 ? 1 : (size + pay - 1) / pay;
         if (n > 0xFFFFFFFFL) throw new IOException("file too large");
+        if (n * (24L + FRAME_BYTES) + 224 > 0xFFFFFFFFL)
+            throw new IOException("file too large for the classic (non-OpenDML) AVI format used here");
 
-        writeMkvHeader(out, n);
+        writeAviHeader(out, n);
         byte[] buf = new byte[CAP];
         byte[] frame = new byte[FRAME_BYTES];
         byte[] calib = calibrationRow();
@@ -67,16 +75,17 @@ public final class B2V {
             crc.update(buf, 0, hdrSize - 4);
             h.putInt((int) crc.getValue());
             toFrame(buf, calib, frame);
-            writeCluster(out, i, frame);
+            writeAviFrame(out, frame);
             done += len;
             if (p != null) p.update(done, size);
         }
+        writeAviIndex(out, n);
         if (in.read() != -1) throw new IOException("input is longer than its reported size");
         out.flush();
     }
 
     static byte[] calibrationRow() {
-        byte[] row = new byte[ROW_BYTES];                       // RGB, top-down
+        byte[] row = new byte[ROW_BYTES];
         for (int i = 0; i < 256; i++) {
             byte v = (byte) i;
             row[3 * i] = v; row[3 * i + 1] = v; row[3 * i + 2] = v;
@@ -87,7 +96,7 @@ public final class B2V {
         return row;
     }
 
-    /** RGB grid (calibration + data) -> BGR frame. */
+    /** RGB grid (calibration + data) -> BGR frame. Unchanged from the original app. */
     static void toFrame(byte[] data, byte[] calib, byte[] frame) {
         for (int r = 0; r < H; r++) {
             byte[] src = r == 0 ? calib : data;
@@ -101,7 +110,7 @@ public final class B2V {
         }
     }
 
-    /** BGR frame -> data bytes (rows 1..1079, RGB). */
+    /** BGR frame -> data bytes (rows 1..1079, RGB). Unchanged from the original app. */
     static void fromFrame(byte[] frame, byte[] data) {
         for (int r = 1; r < H; r++) {
             int s = r * ROW_BYTES;
@@ -114,128 +123,139 @@ public final class B2V {
         }
     }
 
-    // ------------------------------------------------------------- matroska
+    // ------------------------------------------------------------------ avi
 
-    static final int ID_EBML = 0x1A45DFA3, ID_SEGMENT = 0x18538067, ID_INFO = 0x1549A966,
-            ID_TRACKS = 0x1654AE6B, ID_CLUSTER = 0x1F43B675, ID_SIMPLEBLOCK = 0xA3;
-    static final int CLUSTER_CONTENT = 17 + 9 + 4 + FRAME_BYTES;  // Timestamp el + SimpleBlock el
-    static final long CLUSTER_TOTAL = 4 + 8 + CLUSTER_CONTENT;
+    static final byte[] T_RIFF = tag("RIFF"), T_AVI = tag("AVI "), T_LIST = tag("LIST"),
+            T_hdrl = tag("hdrl"), T_avih = tag("avih"), T_strl = tag("strl"), T_strh = tag("strh"),
+            T_vids = tag("vids"), T_strf = tag("strf"), T_movi = tag("movi"), T_00dc = tag("00dc"),
+            T_idx1 = tag("idx1");
 
-    static void writeMkvHeader(OutputStream out, long frames) throws IOException {
-        ByteArrayOutputStream ebml = new ByteArrayOutputStream();
-        uint(ebml, 0x4286, 1); uint(ebml, 0x42F7, 1); uint(ebml, 0x42F2, 4); uint(ebml, 0x42F3, 8);
-        str(ebml, 0x4282, "matroska"); uint(ebml, 0x4287, 4); uint(ebml, 0x4285, 2);
+    static final int AVIH_SIZE = 56, STRH_SIZE = 56, STRF_SIZE = 40;
+    static final int STRL_CONTENT = 4 + (8 + STRH_SIZE) + (8 + STRF_SIZE);      // 'strl'+strh+strf
+    static final int HDRL_CONTENT = (8 + AVIH_SIZE) + (8 + STRL_CONTENT);       // avih + LIST strl
+    static final long MOVI_CONTENT(long n) { return 4 + n * (8L + FRAME_BYTES); }
 
-        ByteArrayOutputStream info = new ByteArrayOutputStream();
-        uint(info, 0x2AD7B1, 1_000_000);                          // timestamps in ms
-        str(info, 0x4D80, "bits2video"); str(info, 0x5741, "bits2video");
-        el(info, 0x4489, ByteBuffer.allocate(8).putDouble(frames * 1000.0).array());
+    static byte[] tag(String s) { return s.getBytes(StandardCharsets.US_ASCII); }
 
-        ByteBuffer bih = ByteBuffer.allocate(40).order(java.nio.ByteOrder.LITTLE_ENDIAN);
-        bih.putInt(40).putInt(W).putInt(-H).putShort((short) 1).putShort((short) 24).putInt(0)
-           .putInt(FRAME_BYTES).putInt(0).putInt(0).putInt(0).putInt(0);
-        ByteArrayOutputStream video = new ByteArrayOutputStream();
-        uint(video, 0xB0, W); uint(video, 0xBA, H);
-        ByteArrayOutputStream track = new ByteArrayOutputStream();
-        uint(track, 0xD7, 1); uint(track, 0x73C5, 1); uint(track, 0x83, 1); uint(track, 0x9C, 0);
-        str(track, 0x86, "V_MS/VFW/FOURCC"); el(track, 0x63A2, bih.array());
-        uint(track, 0x23E383, 1_000_000_000L); el(track, 0xE0, video.toByteArray());
-        ByteArrayOutputStream tracks = new ByteArrayOutputStream();
-        el(tracks, 0xAE, track.toByteArray());
+    static void writeAviHeader(OutputStream out, long n) throws IOException {
+        long riffSize = 4 /* 'AVI ' */
+                + (8 + 4 + HDRL_CONTENT)                 // LIST 'hdrl'
+                + (8 + MOVI_CONTENT(n))                  // LIST 'movi'
+                + (8 + n * 16);                          // 'idx1'
+        out.write(T_RIFF); le32(out, riffSize); out.write(T_AVI);
 
-        el(out, ID_EBML, ebml.toByteArray());
-        ByteArrayOutputStream infoEl = new ByteArrayOutputStream();
-        el(infoEl, ID_INFO, info.toByteArray());
-        el(infoEl, ID_TRACKS, tracks.toByteArray());
-        id(out, ID_SEGMENT);
-        size8(out, infoEl.size() + frames * CLUSTER_TOTAL);
-        infoEl.writeTo(out);
+        out.write(T_LIST); le32(out, 4 + HDRL_CONTENT); out.write(T_hdrl);
+        out.write(T_avih); le32(out, AVIH_SIZE);
+        le32(out, 1_000_000);              // dwMicroSecPerFrame (1 fps)
+        le32(out, FRAME_BYTES);            // dwMaxBytesPerSec
+        le32(out, 0);                      // dwPaddingGranularity
+        le32(out, 0x910);                  // dwFlags: HASINDEX|ISINTERLEAVED|TRUSTCKTYPE
+        le32(out, n);                      // dwTotalFrames
+        le32(out, 0);                      // dwInitialFrames
+        le32(out, 1);                      // dwStreams
+        le32(out, FRAME_BYTES);            // dwSuggestedBufferSize
+        le32(out, W); le32(out, H);        // dwWidth, dwHeight
+        le32(out, 0); le32(out, 0); le32(out, 0); le32(out, 0);   // dwReserved[4]
+
+        out.write(T_LIST); le32(out, STRL_CONTENT); out.write(T_strl);
+        out.write(T_strh); le32(out, STRH_SIZE);
+        out.write(T_vids); le32(out, 0);   // fccHandler = 0 (uncompressed)
+        le32(out, 0);                      // dwFlags
+        le16(out, 0); le16(out, 0);        // wPriority, wLanguage
+        le32(out, 0);                      // dwInitialFrames
+        le32(out, 1); le32(out, 1);        // dwScale, dwRate (1/1 = 1 fps)
+        le32(out, 0);                      // dwStart
+        le32(out, n);                      // dwLength
+        le32(out, FRAME_BYTES);            // dwSuggestedBufferSize
+        le32(out, 0xFFFFFFFF);             // dwQuality (unspecified)
+        le32(out, 0);                      // dwSampleSize
+        le16(out, 0); le16(out, 0); le16(out, W); le16(out, H);   // rcFrame
+
+        out.write(T_strf); le32(out, STRF_SIZE);
+        le32(out, STRF_SIZE);              // biSize
+        le32(out, W); le32(out, -H);       // biWidth, biHeight (negative = top-down)
+        le16(out, 1); le16(out, 24);       // biPlanes, biBitCount
+        le32(out, 0);                      // biCompression = BI_RGB
+        le32(out, FRAME_BYTES);            // biSizeImage
+        le32(out, 0); le32(out, 0);        // biX/YPelsPerMeter
+        le32(out, 0); le32(out, 0);        // biClrUsed, biClrImportant
+
+        out.write(T_LIST); le32(out, MOVI_CONTENT(n)); out.write(T_movi);
     }
 
-    static void writeCluster(OutputStream out, long i, byte[] frame) throws IOException {
-        id(out, ID_CLUSTER); size8(out, CLUSTER_CONTENT);
-        out.write(0xE7); size8(out, 8);
-        out.write(ByteBuffer.allocate(8).putLong(i * 1000).array());
-        out.write(ID_SIMPLEBLOCK); size8(out, 4 + FRAME_BYTES);
-        out.write(new byte[]{(byte) 0x81, 0, 0, (byte) 0x80});   // track 1, rel. time 0, keyframe
-        out.write(frame);
+    static void writeAviFrame(OutputStream out, byte[] frame) throws IOException {
+        out.write(T_00dc); le32(out, FRAME_BYTES); out.write(frame);   // FRAME_BYTES is always even, no pad needed
     }
 
-    static void id(OutputStream o, int id) throws IOException {
-        int n = id >= 0x1000000 ? 4 : id >= 0x10000 ? 3 : id >= 0x100 ? 2 : 1;
-        for (int k = n - 1; k >= 0; k--) o.write(id >>> (8 * k));
+    static void writeAviIndex(OutputStream out, long n) throws IOException {
+        out.write(T_idx1); le32(out, n * 16);
+        long offset = 4;                    // relative to the first byte after 'movi's own fourCC
+        for (long i = 0; i < n; i++) {
+            out.write(T_00dc);
+            le32(out, 0x10);                // AVIIF_KEYFRAME
+            le32(out, offset);
+            le32(out, FRAME_BYTES);
+            offset += 8 + FRAME_BYTES;
+        }
     }
 
-    static void size8(OutputStream o, long v) throws IOException {
-        o.write(0x01);
-        for (int k = 6; k >= 0; k--) o.write((int) (v >>> (8 * k)));
-    }
-
-    static void el(OutputStream o, int id, byte[] content) throws IOException {
-        id(o, id); size8(o, content.length); o.write(content);
-    }
-
-    static void uint(OutputStream o, int id, long v) throws IOException {
-        el(o, id, ByteBuffer.allocate(8).putLong(v).array());
-    }
-
-    static void str(OutputStream o, int id, String s) throws IOException {
-        el(o, id, s.getBytes(StandardCharsets.UTF_8));
+    static void le16(OutputStream o, int v) throws IOException { o.write(v); o.write(v >>> 8); }
+    static void le32(OutputStream o, long v) throws IOException {
+        o.write((int) v); o.write((int) (v >>> 8)); o.write((int) (v >>> 16)); o.write((int) (v >>> 24));
     }
 
     // ---------------------------------------------------------------- decode
 
-    /** Reads Matroska SimpleBlock frames one at a time from a stream. */
+    /** Reads raw '00dc'/'00db' video frames from an AVI's 'movi' list, tolerating
+     * other chunks (JUNK, odml, idx1, LIST hdrl, etc.) anywhere else in the file. */
     public static final class FrameReader {
         final InputStream in;
+        boolean inMovi = false;
         public FrameReader(InputStream in) { this.in = in; }
 
-        /** Fills frame with the next video frame; false at end of stream. */
         public boolean next(byte[] frame) throws IOException {
             while (true) {
-                int first = in.read();
-                if (first < 0) return false;
-                long id = readVint(first, true);
-                long size = readSize();
-                if (id == ID_SEGMENT || id == ID_CLUSTER) continue;  // descend into masters
-                if (id == ID_SIMPLEBLOCK) {
-                    if (size < 0) throw new IOException("bad block size");
-                    int b = in.read();
-                    int trackLen = Integer.numberOfLeadingZeros(b & 0xFF) - 23;
-                    skipFully(in, trackLen - 1);
-                    int t1 = in.read(), t2 = in.read(), flags = in.read();
-                    if (b < 0 || flags < 0 || t1 < 0 || t2 < 0) throw new EOFException();
-                    if ((flags & 0x06) != 0) throw new IOException("laced blocks not supported");
-                    long dataLen = size - trackLen - 3;
-                    if (dataLen != FRAME_BYTES)
-                        throw new IOException("not a 1920x1080 uncompressed B2V2 video");
+                byte[] tag = new byte[4];
+                int r = readSome(in, tag, 0, 4);
+                if (r < 4) return false;              // clean EOF between chunks
+                long size = readLe32(in);
+                if (size < 0) throw new IOException("bad AVI chunk size");
+
+                if (eq(tag, T_RIFF) || eq(tag, T_LIST)) {
+                    byte[] listType = new byte[4];
+                    readFully(in, listType, 0, 4);
+                    inMovi = inMovi || eq(listType, T_movi);
+                    continue;                          // descend: next loop reads what's inside
+                }
+                if (inMovi && (eq(tag, T_00dc) || eq(tag, tag("00db")))) {
+                    if (size != FRAME_BYTES)
+                        throw new IOException("not a 1920x1080 uncompressed B2V2 AVI video");
                     readFully(in, frame, 0, FRAME_BYTES);
+                    if ((size & 1) != 0) in.read();     // RIFF chunks are word-aligned
                     return true;
                 }
-                if (size < 0) throw new IOException("unsupported unknown-size element");
                 skipFully(in, size);
+                if ((size & 1) != 0) in.read();
             }
         }
+    }
 
-        long readVint(int first, boolean keepMarker) throws IOException {
-            int len = Integer.numberOfLeadingZeros(first & 0xFF) - 23;
-            if (len < 1 || len > 8) throw new IOException("not a Matroska file");
-            long v = keepMarker ? first : first & (0xFF >> len);
-            for (int k = 1; k < len; k++) {
-                int b = in.read();
-                if (b < 0) throw new EOFException();
-                v = (v << 8) | b;
-            }
-            return v;
-        }
+    static boolean eq(byte[] a, byte[] b) { return java.util.Arrays.equals(a, b); }
 
-        long readSize() throws IOException {
-            int first = in.read();
-            if (first < 0) throw new EOFException();
-            int len = Integer.numberOfLeadingZeros(first & 0xFF) - 23;
-            long v = readVint(first, false);
-            return v == (1L << (7 * len)) - 1 ? -1 : v;               // all ones = unknown size
+    static int readSome(InputStream in, byte[] b, int off, int len) throws IOException {
+        int total = 0;
+        while (total < len) {
+            int r = in.read(b, off + total, len - total);
+            if (r < 0) return total;
+            total += r;
         }
+        return total;
+    }
+
+    static long readLe32(InputStream in) throws IOException {
+        int b0 = in.read(), b1 = in.read(), b2 = in.read(), b3 = in.read();
+        if ((b0 | b1 | b2 | b3) < 0) throw new EOFException();
+        return (b0 & 0xFFL) | ((b1 & 0xFFL) << 8) | ((b2 & 0xFFL) << 16) | ((b3 & 0xFFL) << 24);
     }
 
     /** Parses and validates the header of a decoded data frame; null if invalid. */
@@ -256,7 +276,6 @@ public final class B2V {
         return r;
     }
 
-    /** Reads only the first frame and returns its first 4 bytes, to tell B2V2 from B2V3 before committing to either. */
     public static byte[] peekMagic(InputStream in) throws IOException {
         byte[] frame = new byte[FRAME_BYTES], data = new byte[CAP];
         if (!new FrameReader(in).next(frame)) throw new IOException("no video frames found");
@@ -264,7 +283,6 @@ public final class B2V {
         return java.util.Arrays.copyOf(data, 4);
     }
 
-    /** Reads only the first frame's header (for the original name and size). */
     public static Header peek(InputStream in) throws IOException {
         byte[] frame = new byte[FRAME_BYTES], data = new byte[CAP];
         if (!new FrameReader(in).next(frame)) throw new IOException("no video frames found");
@@ -286,7 +304,7 @@ public final class B2V {
             Header h = parseHeader(data);
             if (h == null) throw new IOException("frame " + expect + ": header damaged");
             if (first == null) first = h;
-            if (h.idx < expect) continue;                              // duplicate frame
+            if (h.idx < expect) continue;
             if (h.idx != expect) throw new IOException("frame " + expect + " missing");
             crc.reset();
             crc.update(data, h.size, h.payloadLen);
@@ -329,11 +347,11 @@ public final class B2V {
         byte[] b = s.getBytes(StandardCharsets.UTF_8);
         if (b.length <= max) return b;
         int end = max;
-        while (end > 0 && (b[end] & 0xC0) == 0x80) end--;              // don't split a character
+        while (end > 0 && (b[end] & 0xC0) == 0x80) end--;
         return java.util.Arrays.copyOf(b, end);
     }
 
-    /** Desktop CLI: java -cp b2v.jar app.bits2video.B2V encode IN OUT.mkv | decode IN.mkv OUTDIR */
+    /** Desktop CLI: java -cp b2v.jar app.bits2video.playable.B2V encode IN OUT.avi | decode IN.avi OUTDIR */
     public static void main(String[] a) throws IOException {
         if (a.length == 3 && a[0].equals("encode")) {
             java.io.File f = new java.io.File(a[1]);
@@ -344,7 +362,7 @@ public final class B2V {
         } else if (a.length == 3 && a[0].equals("decode")) {
             String name;
             try (InputStream in = new java.io.BufferedInputStream(new java.io.FileInputStream(a[1]), 1 << 20)) {
-                name = new java.io.File(peek(in).name).getName();       // strip any path parts
+                name = new java.io.File(peek(in).name).getName();
             }
             java.io.File outF = new java.io.File(a[2], name.isEmpty() ? "decoded" : name);
             try (InputStream in = new java.io.BufferedInputStream(new java.io.FileInputStream(a[1]), 1 << 20);
@@ -353,7 +371,7 @@ public final class B2V {
             }
             System.out.println("decoded -> " + outF);
         } else {
-            System.err.println("usage: B2V encode IN OUT.mkv | B2V decode IN.mkv OUTDIR");
+            System.err.println("usage: B2V encode IN OUT.avi | B2V decode IN.avi OUTDIR");
             System.exit(2);
         }
     }

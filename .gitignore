@@ -2,6 +2,9 @@
 android/build/
 android/*.apk
 android/release.keystore
+android-playable/build/
+android-playable/*.apk
+android-playable/release.keystore
 
 # Desktop build scratch, if rebuilt locally
 desktop/classes/

@@ -5,22 +5,33 @@ red, green and blue values hold 3 bytes of the file — and decodes that video
 back into the exact original file, byte for byte. Optionally encrypts the
 file first with a password and/or key file, using AES-256-GCM.
 
-Two ways to run it, sharing the same video format so a file encoded on one
-decodes fine on the other:
+Three builds, all sharing the same video format so a file encoded on one
+decodes fine on any of the others:
 
-- **[`android/`](android/)** — an Android app (7.0+). Pick a file to encode,
-  or a video to decode, from the system file picker. Build with
-  `android/build.sh` (needs an Android SDK: platform 36, build-tools 36.0.0,
-  and a JDK).
 - **[`desktop/`](desktop/)** — a command-line jar for Windows, Linux and
   macOS (needs Java 11+). See [`desktop/README.md`](desktop/README.md) for
-  usage, including the encryption options.
+  usage, including the encryption options. Produces plain AVI files.
+- **[`android-playable/`](android-playable/)** — the current Android app
+  (7.0+), package `app.bits2video.playable`. Same AVI container as
+  `desktop/`, so its videos play in VLC and most other players. Build with
+  `android-playable/build.sh`.
+- **[`android/`](android/)** — the original Android app, package
+  `app.bits2video`. Same pixel data, but packaged in a hand-written
+  Matroska container that most players (VLC included) can't open — kept
+  here because it's a separate, side-by-side-installable app and still
+  fully interoperable at the data level, not because it's recommended over
+  `android-playable/`.
+
+Both Android variants can be installed on the same device at once (distinct
+package names and signing keys), which is what they're for — comparing them
+side by side.
 
 ## Format
 
-1920x1080 frames, uncompressed 24-bit RGB in a Matroska (`.mkv`) container,
-1 frame per second. Every pixel after row 0 carries 3 bytes of file data;
-row 0 is a calibration strip. Two variants:
+1920x1080 frames, uncompressed 24-bit RGB, 1 frame per second. Every pixel
+after row 0 carries 3 bytes of file data; row 0 is a calibration strip
+(unused by the decoder for this lossless format, kept for layout
+compatibility). Two variants, independent of container:
 
 - **B2V2** — plain, unencrypted.
 - **B2V3** — encrypted. AES-256-GCM per frame, keyed by PBKDF2-HMAC-SHA256
@@ -30,10 +41,10 @@ row 0 is a calibration strip. Two variants:
   there's no partial or garbled output, and no way to recover a file
   without the password/key file.
 
-The full byte-level spec is documented in the header comments of
-`B2V.java` and `B2VSecure.java` (identical copies live under both
-`android/src/` and `desktop/src/`, since the Android and desktop builds
-compile independently).
+`desktop/` and `android-playable/` write/read this data inside a plain AVI
+container (BGR24, top-down, `BI_RGB`); `android/` uses a hand-written
+Matroska container with the identical pixel/data layout. The full byte-level
+spec is documented in the header comments of each `B2V.java`/`B2VSecure.java`.
 
 ## Important
 

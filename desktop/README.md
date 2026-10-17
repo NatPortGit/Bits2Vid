@@ -6,9 +6,10 @@ back into the exact original file, byte for byte. Optionally encrypts it
 with a password and/or key file first, with AES-256-GCM.
 
 This folder contains `bits2video.jar`, which runs on Windows, Linux and
-macOS. It is the same encoder/decoder used by the Bits2Video Android app, so
-a video made on your phone decodes here, and vice versa (unencrypted and
-encrypted videos both work either way).
+macOS. It is the same encoder/decoder used by the Bits2Video Playable Android
+app, so a video made on your phone decodes here, and vice versa (unencrypted
+and encrypted videos both work either way). The video is a plain AVI file, so
+it plays in VLC and most other players, same as the phone app.
 
 ## Requirements
 
@@ -30,12 +31,12 @@ folder, or `cd` into it, then:
 
 **Encode a file into a video:**
 ```
-java -jar bits2video.jar encode <input-file> <output.mkv>
+java -jar bits2video.jar encode <input-file> <output.avi>
 ```
 
 **Decode a video back into the original file:**
 ```
-java -jar bits2video.jar decode <input.mkv> <output-folder>
+java -jar bits2video.jar decode <input.avi> <output-folder>
 ```
 
 The output folder is created if it doesn't exist, and the decoded file is
@@ -44,13 +45,13 @@ saved there under its original name.
 ### Examples
 
 ```
-java -jar bits2video.jar encode photo.jpg photo.b2v.mkv
-java -jar bits2video.jar decode photo.b2v.mkv .
+java -jar bits2video.jar encode photo.jpg photo.b2v.avi
+java -jar bits2video.jar decode photo.b2v.avi .
 ```
 
 On Windows, if a path has spaces, put it in quotes:
 ```
-java -jar bits2video.jar encode "C:\Users\You\Documents\report.pdf" report.b2v.mkv
+java -jar bits2video.jar encode "C:\Users\You\Documents\report.pdf" report.b2v.avi
 ```
 
 ### Encrypting
@@ -59,8 +60,8 @@ Add `--password` and/or `--keyfile` to either command to protect the video.
 Leave both out for a plain, unprotected video (the default).
 
 ```
-java -jar bits2video.jar encode secrets.zip secrets.b2v3.mkv --password-prompt
-java -jar bits2video.jar decode secrets.b2v3.mkv . --password-prompt
+java -jar bits2video.jar encode secrets.zip secrets.b2v3.avi --password-prompt
+java -jar bits2video.jar decode secrets.b2v3.avi . --password-prompt
 ```
 
 - `--password-prompt` asks for the password interactively, so it never ends
@@ -92,8 +93,8 @@ Copying the file as-is (a USB drive, a direct file transfer, cloud storage
 that stores the file unchanged) is fine.
 
 The video will also be noticeably larger than the input file — this trades
-space for being simple, lossless, and viewable as an actual (if unwatchable)
-video. It is not a compression tool.
+space for being simple, lossless, and actually watchable (if not very
+interesting to look at) in a normal video player. It is not a compression tool.
 
 ## What's in this folder
 
