@@ -8,3 +8,4 @@ android-playable/release.keystore
 
 # Desktop build scratch, if rebuilt locally
 desktop/classes/
+__pycache__/

@@ -8,9 +8,12 @@ file first with a password and/or key file, using AES-256-GCM.
 Three builds, all sharing the same video format so a file encoded on one
 decodes fine on any of the others:
 
-- **[`desktop/`](desktop/)** — a command-line jar for Windows, Linux and
-  macOS (needs Java 11+). See [`desktop/README.md`](desktop/README.md) for
-  usage, including the encryption options. Produces plain AVI files.
+- **[`desktop/`](desktop/)** — for Windows, Linux and macOS. See
+  [`desktop/README.md`](desktop/README.md) for usage, including the
+  encryption options. Two independent, interoperable implementations
+  inside it: a Python GUI and CLI (`desktop/python/`, needs only Python,
+  plus `pip install cryptography` for encryption), and a Java CLI
+  (`desktop/bits2video.jar`, needs Java 11+). Both produce plain AVI files.
 - **[`android-playable/`](android-playable/)** — the current Android app
   (7.0+), package `app.bits2video.playable`. Same AVI container as
   `desktop/`, so its videos play in VLC and most other players. Build with
@@ -41,10 +44,23 @@ compatibility). Two variants, independent of container:
   there's no partial or garbled output, and no way to recover a file
   without the password/key file.
 
-`desktop/` and `android-playable/` write/read this data inside a plain AVI
-container (BGR24, top-down, `BI_RGB`); `android/` uses a hand-written
-Matroska container with the identical pixel/data layout. The full byte-level
-spec is documented in the header comments of each `B2V.java`/`B2VSecure.java`.
+`desktop/` (both the Python and Java versions) and `android-playable/`
+write/read this data inside a plain AVI container (BGR24, top-down,
+`BI_RGB`); `android/` uses a hand-written Matroska container with the
+identical pixel/data layout. The full byte-level spec is documented in the
+header comments of each `B2V.java`/`B2VSecure.java` and `b2vcore.py`.
+
+One cross-language detail worth knowing if you're reading the source: the
+Java tools derive the encryption key via `PBEKeySpec(char[])`, and Java's
+actual (tested, not just documented) behaviour there is to decode those
+chars as ISO-8859-1 and then **re-encode that as UTF-8** before running
+PBKDF2 -- not use the bytes as given. `b2vcore.py`'s `_java_kdf_bytes()`
+replicates this exactly, verified by live cross-tool encrypt/decrypt tests
+in both directions (password-only, key-file-only, and both combined).
+Skipping that step would make Python- and Java-made encrypted videos
+silently fail to decrypt on the other tool whenever the key material
+contains a byte >= 0x80, which a key file's SHA-256 hash always will,
+roughly half the time per byte.
 
 ## Important
 
